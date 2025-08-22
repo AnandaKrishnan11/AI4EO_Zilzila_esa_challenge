@@ -3,6 +3,7 @@ from rasterio.mask import mask
 import geopandas as gpd
 import numpy as np
 import os
+from utils import PathCollector
 from tqdm import tqdm
 from shapely.geometry import mapping
 import matplotlib.pyplot as plt
@@ -13,7 +14,7 @@ import argparse
 
 
 class BitemporalImageCropper:
-    def __init__(self, pre_image_path, post_image_path, shapefile_path, output_base_dir):
+    def __init__(self,img_path, excel_path,output_base_dir):
         """
         Initialize the bitemporal image cropper
         
@@ -23,9 +24,10 @@ class BitemporalImageCropper:
             shapefile_path (str): Path to shapefile with bounding boxes
             output_base_dir (str): Base directory for output
         """
-        self.pre_image_path = pre_image_path
-        self.post_image_path = post_image_path
-        self.shapefile_path = shapefile_path
+
+        collector = PathCollector(img_path,excel_path)
+        self.image_collection = collector.collect()
+
         self.output_base_dir = output_base_dir
         
         # Create output directories
@@ -37,15 +39,20 @@ class BitemporalImageCropper:
         os.makedirs(self.post_output_dir, exist_ok=True)
         os.makedirs(self.label_dir, exist_ok=True)
         
-        # Load shapefile
-        self.gdf = gpd.read_file(shapefile_path)
-        print(f"Loaded {len(self.gdf)} features from shapefile")
+        # Empty loader
+        self.gdf = gpd.GeoDataFrame()
+
+   
         
-    def validate_geometries(self):
+    def validate_geometries(self,shapefile_path):
         """Validate and clean geometries in the shapefile"""
         valid_features = []
         invalid_features = []
         
+        self.gdf = gpd.read_file(shapefile_path)
+        print(f"Loaded {len(self.gdf)} features from shapefile")
+
+
         for idx, row in self.gdf.iterrows():
             geometry = row.geometry
             if geometry.is_valid and not geometry.is_empty:
@@ -59,9 +66,9 @@ class BitemporalImageCropper:
             self.gdf = self.gdf.iloc[valid_features].copy()
             print(f"Removed {len(invalid_features)} invalid geometries")
     
-    def check_crs_compatibility(self):
+    def check_crs_compatibility(self, image_path):
         """Check and handle CRS compatibility between shapefile and images"""
-        with rasterio.open(self.pre_image_path) as src:
+        with rasterio.open(image_path) as src:
             raster_crs = src.crs
         
         if self.gdf.crs != raster_crs:
@@ -113,7 +120,7 @@ class BitemporalImageCropper:
             return None
     
     
-    def crop_all_features(self, feature_id_field='id', all_touched=True):
+    def crop_all_features(self,feature_id_field='id', all_touched=True):
         """
         Crop both pre and post images for all features
         
@@ -125,58 +132,67 @@ class BitemporalImageCropper:
         Returns:
             list: List of metadata for all cropped images
         """
-        # Validate geometries and CRS
-        self.validate_geometries()
-        self.check_crs_compatibility()
 
-        
-        
-        for idx, row in tqdm(self.gdf.iterrows(), total=len(self.gdf), desc="Cropping features"):
-            
-            if feature_id_field in row:
-                feature_id = row[feature_id_field]
-            else:
-                feature_id = f"feature_{idx}"
-            
-            geometry = row.geometry
-            dem_cls = row.damaged
-            
-           
-            pre_tif_path = os.path.join(self.pre_output_dir, f"{feature_id}.tif")
-            post_tif_path = os.path.join(self.post_output_dir, f"{feature_id}.tif")
-            label_path = os.path.join(self.label_dir, f"{feature_id}.txt")
-            
-            
-            self.crop_single(
-                self.pre_image_path, geometry, pre_tif_path, feature_id, all_touched
-            )
-            
-            
-            self.crop_single(
-                self.post_image_path, geometry, post_tif_path, feature_id, all_touched
-            )
+        counter = 0
+    
+        for i, row in self.image_collection.iterrows():
+                pre_img = row["pre"]
+                post_img = row["post"]
+                shp = row["shp"]
 
-            with open(label_path, 'w') as txt:
-                txt.write(f'{dem_cls}\n')  # check this line 
+                # Validate geometries and CRS
+                self.validate_geometries(shp)
+                self.check_crs_compatibility(post_img)
+
+                
+                
+                for idx, row in tqdm(self.gdf.iterrows(), total=len(self.gdf), desc="Cropping features"):
+                    
+                    if feature_id_field in row:
+                        feature_id = row[feature_id_field]
+                    else:
+                        feature_id = f"feature_{idx}"
+                    
+                    geometry = row.geometry
+                    dem_cls = row.damaged
+                    
+                
+                    pre_tif_path = os.path.join(self.pre_output_dir, f"{counter}.tif")
+                    post_tif_path = os.path.join(self.post_output_dir, f"{counter}.tif")
+                    label_path = os.path.join(self.label_dir, f"{counter}.txt")
+                    counter+=1
+                    
+                    
+                    self.crop_single(
+                        pre_img, geometry, pre_tif_path, feature_id, all_touched
+                    )
+                    
+                    
+                    self.crop_single(
+                        post_img, geometry, post_tif_path, feature_id, all_touched
+                    )
+
+                    with open(label_path, 'w') as txt:
+                        txt.write(f'{dem_cls}\n')  # check this line 
 
 
 def parser():
     pars_vals = argparse.ArgumentParser(description='parsing arguments')
-    pars_vals.add_argument('--pre_image_path', type=str, help='the pre image path')
-    pars_vals.add_argument('--post_image_path', type=str, help='post image path')
-    pars_vals.add_argument('--shapefile_path', type=str, help='shape file path')
+    pars_vals.add_argument('--image_path', type=str, help='the path to the directory')
+    pars_vals.add_argument('--excel_path', type=str, help='excel sheet path')
     pars_vals.add_argument('--output_base_dir', type=str, help='output directory to save pre, post and labels')
     return pars_vals.parse_args()
 
 
 def main():
 
+
+
     args = parser()
     
     cropper = BitemporalImageCropper(
-        pre_image_path = args.pre_image_path,
-        post_image_path= args.post_image_path,
-        shapefile_path=args.shapefile_path,
+        img_path = args.image_path,
+        excel_path= args.excel_path,
         output_base_dir=args.output_base_dir
     )
     
