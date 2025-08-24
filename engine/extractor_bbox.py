@@ -110,14 +110,12 @@ class BitemporalImageCropper:
                     "transform": cropped_transform
                 })
                 
-                # Save the cropped image
-                with rasterio.open(output_path, "w", **out_meta) as dest:
-                    dest.write(cropped_image)
+                return cropped_image, out_meta
                 
                 
         except Exception as e:
             print(f"Error cropping image for feature {feature_id}: {e}")
-            return None
+            
     
     
     def crop_all_features(self,feature_id_field='id', all_touched=True):
@@ -160,20 +158,33 @@ class BitemporalImageCropper:
                     pre_tif_path = os.path.join(self.pre_output_dir, f"{counter}.tif")
                     post_tif_path = os.path.join(self.post_output_dir, f"{counter}.tif")
                     label_path = os.path.join(self.label_dir, f"{counter}.txt")
-                    counter+=1
                     
                     
-                    self.crop_single(
-                        pre_img, geometry, pre_tif_path, feature_id, all_touched
-                    )
                     
                     
-                    self.crop_single(
-                        post_img, geometry, post_tif_path, feature_id, all_touched
-                    )
+                    pre_result = self.crop_single(pre_img, geometry, pre_tif_path, feature_id, all_touched)
+                
+                
+                    post_result = self.crop_single(post_img, geometry, post_tif_path, feature_id, all_touched)
 
-                    with open(label_path, 'w') as txt:
-                        txt.write(f'{dem_cls}\n')  # check this line 
+                    if pre_result and post_result:
+                        pre,out_meta_pre = pre_result
+                        post,out_meta_post = post_result
+
+                        if pre is not None and post is not None:
+                            # Save the cropped image
+                            with rasterio.open(pre_tif_path, "w", **out_meta_pre) as dest:
+                                dest.write(pre)
+
+                            with rasterio.open(post_tif_path, "w", **out_meta_post) as dest:
+                                dest.write(post)
+
+
+                            with open(label_path, 'w') as txt:
+                                txt.write(f'{dem_cls}\n')  # check this line 
+                            counter+=1
+                        else:
+                            continue
 
 
 def parser():
@@ -200,11 +211,7 @@ def main():
         feature_id_field='id',
         all_touched=True
     )
-    
 
-    print(f"Pre-event crops saved in: {cropper.pre_output_dir}")
-    print(f"Post-event crops saved in: {cropper.post_output_dir}")
-    print(f"Post-event crops saved in: {cropper.post_output_dir}")
     
 
 if __name__ == "__main__":
